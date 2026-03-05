@@ -1,0 +1,576 @@
+---
+title: "Restaurant Analysis in India: Rating Factors, Geographic Distributions, and Food Trend"
+author: "Richard Li, Oliver Liu, Hazel Zhou, Emily Lan"
+date: "2025-12-08"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    self_contained: yes
+    code_folding: show
+  pdf_document:
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+# Introduction and Preparation
+
+## Motivation
+
+Many people regard the restaurant beneath their apartment or across the street as an indispensable yet unremarkable part of daily life. However, it is important to recognize that, beyond their usual role as food providers, restaurants also serve as vital indicators of broader economic trends and social dynamics. Take, for instance, pricing as an example. Restaurant pricing is a direct and powerful proxy for regional cost of living and disposable income. By modeling the distribution of menu prices, we can gain a clearer understanding of local economic health and consumer purchasing power. Aside from pricing, the geographical clustering of restaurants also offers a unique lens into urban planning and development and population density. The variety and prevalence of certain cuisine types in a specific area reveals valuable information about this region’s cultural diversity, immigration trends, and evolving dietary preferences. Even if you are not a scholar, discussions about restaurants remain closely tied to your personal interests. As consumers, we routinely assess whether the price of a meal aligns with the overall dining experience, which is a judgment that reflects the direct relationship between a restaurant’s quality and its pricing structure. 
+
+This research project aims to provide insightful answers to some of the above mentioned interesting topics regarding restaurants. By employing robust statistical methods and informative statistical visualization, we will quantify the relationship between restaurant quality (characterized by numerous variables) and its price range, explore the geographic distribution of restaurants and food price, as well as explore the most liked cuisine types of specific regions. Analyzing these interesting topics can elicit significant insights into broader market dynamics and consumer patterns, as well as laying the foundation for future studies in the same field. 
+
+## Data Cleaning and EDA
+```{r, include = FALSE}
+# these are basic data restructuring steps that makes the data easier to use
+library(tidyverse)
+library(sf)
+library(janitor)
+library(RKaggle)
+library(ggplot2)
+library(tm)
+library(wordcloud)
+library(SnowballC)
+library(tidytext)
+library(mapindia)
+library(factoextra)
+restaurant_data <- RKaggle::get_dataset("mohdshahnawazaadil/restaurant-dataset")
+country_lookup <- tribble(~country_code, ~country_iso3, ~country_name, 
+  1, "IND", "India",
+  216, "USA", "United States",
+  215, "GBR", "United Kingdom",
+  30,  "BRA", "Brazil",
+  189, "ZAF", "South Africa",
+  214, "ARE", "United Arab Emirates",
+  148, "NZL", "New Zealand",
+  208, "TUR", "Turkey",
+  14,  "AUS", "Australia",
+  162, "PHL", "Philippines",
+  94,  "IDN", "Indonesia",
+  166, "QAT", "Qatar",
+  184, "SGP", "Singapore",
+  191, "LKA", "Sri Lanka",
+  37,  "CAN", "Canada")
+restaurant_data_clean <- restaurant_data %>%
+  left_join(country_lookup, by = c(`Country Code` = "country_code"))
+restaurant_data_clean <- restaurant_data_clean %>% select(-`Country Code`)
+# below are some extra steps to make the dataset more organized and to
+# eliminate unqualified data.
+restaurant_data_clean <- restaurant_data_clean %>% 
+  clean_names(case = "snake")
+restaurant_data_clean <- restaurant_data_clean %>% 
+  filter(longitude != 0, latitude != 0)
+```
+
+The data we choose is a global restaurant data set that contains 9551 restaurants from different countries around the world. Although this seems to be a global dataset, one problem emerges as we briefly explores the distribution of restaurants across countries: 
+```{r, echo = FALSE, warning = FALSE, fig.align='center'}
+ggplot(data = restaurant_data_clean, aes(x = country_name)) + 
+  geom_bar(fill = "steelblue", alpha = 0.8) + 
+  geom_text(stat = "count", aes(label = after_stat(count)), hjust = -0.1, 
+            size = 3) +
+  coord_flip() + 
+  labs(title = "Distribution of restaurants across countries", 
+       x = "Countries", y = "Number of Restaurants")
+```
+
+As shown in the bar chart above, out of the 9,551 restaurants in the dataset, 8,156 are located in India. In a truly representative global dataset, it is unusual for a single country to account for approximately 85.4% of the entries. Such an imbalance introduces significant regional bias, which may result in research findings that do not generalize well across international contexts. To address this imbalance, we chose to convert the global restaurant dataset into an India-specific dataset by excluding restaurants from other countries. This change allows us to retain the majority of the data entries while improving the overall precision and consistency of our analysis. We have also made minor changes to the variables. We first replaced the `Country Code` variable, which doesn't correspond with any real life country code system, with iso3 country code and the actual country name. We also turned all the variable names into camel case.  
+```{r, include = FALSE}
+restaurant_India <- restaurant_data_clean %>% filter(country_name == "India")
+# there is one specific data entry that has wrong longitude and latitude. Thus, we delete this data entry for India dataset
+restaurant_India <- restaurant_India %>% filter(restaurant_id != 18419884)
+```
+
+Now that we have finished data cleaning, we may begin formal EDA to describe and explore our Indian Restaurant dataset. The Indian restaurant dataset have 8155 rows and 22 columns, each row represents a restaurant located in India while each column represents a variable on the restaurants. The categorical variables and their definitions are listed below: 
+
+1. restaurant_name: the full name of the restaurant
+
+2. city: the city that the restaurant is located in 
+
+3. address: the full address of the restaurant
+
+4. locality: the city segment that the restaurant is located in
+
+5. locality_verbose: locality and city name written together
+
+6. cuisines: a short texual description of the restaurant's cuisine style 
+
+7. currency: the currency that the restaurant excepts
+
+8. has_table_booking: a binary variable showing whether the restaurant accepts table booking (Yes/No)
+
+9. has_online_delivery: a binary variable showing whether the restaurant has online delivery service (Yes/No)
+
+10. is_delivering_now: a binary variable indicating whether the restaurant is currently delivering (Yes/No)
+
+11. switch_to_order_menu: a binary variable indicating whether the restaurant has online menu ordering options (Yes/No)
+
+12. rating_text: Single word or two-letter phrase that gives the rating level of the restaurant. Ranking levels from high to low are: Excellent, Very Good, Good, Average, Poor, Not Rated. 
+
+12. rating_color: colors indicating the rating levels of the restaurant. Each color correspond to a specific rating_text above. The colors are (in the same order as rating texts): Dark Green, Green, Yellow, Orange, Red, White
+
+13. country_iso3: newly added variable denoting the iso3 three-letter country code of each country 
+
+14. country_name: newly added variable denoting the name of the country. 
+
+The quantitative variables and their definitions are listed below: 
+
+1. restaurant_id: number series that correspond to unique restaurants
+
+2. longitude: the longitude of a restaurant
+
+3. latitude: the latitude of a restaurant
+
+4. average_cost_for_two: the average cost of two people dining at the restaurant 
+
+5. price_range: an index denoting the price range of the restaurant's menu. This index ranges from 1 to 4, with 1 indicating very small range and 4 indicating very high range.
+
+6. aggregate_rating: the aggregated rating of a restaurant 
+
+7. votes: the number of votes received by a restaurant 
+
+Among these 22 variables, a few are of lesser help to our research. For instance, the variable "currency", "country_iso3" and "country_name" would all be the same in our current dataset, since we have transformed the original dataset into the Indian restaurant dataset, and the restaurant in the same country should have uniform currency, country code and name. Variable "locality_verbose" is just the combination of locality and city, thus itself provides no useful information. Similarly, variable "rating_color" is simply the color representation of the "rating_text", thus provide no further useful information. "restaurant_id" is just an id used by the data collector to organize restaurants, and contain no useful information on the restaurants. For these reasons above, we will not include these variables in our EDA and latter research. 
+
+Now we began to analyze our useful variables. First, we aim to investigate the distribution of restaurants across Indian cities. 
+```{r, echo = FALSE, warning = FALSE, fig.align='center'}
+top_10_cities <- restaurant_India %>%
+  count(city, sort = TRUE) %>%
+  slice_max(n, n = 10, with_ties = FALSE)
+
+ggplot(data = restaurant_India %>% 
+         filter(city %in% top_10_cities$city), 
+       aes(x = reorder(city, city, function(x) length(x)))) + 
+  geom_bar(fill = "steelblue", alpha = 0.8) + 
+  geom_text(stat = "count", aes(label = after_stat(count)), 
+            hjust = -0.1, size = 3.2) +
+  coord_flip() + 
+  labs(title = "Distribution of Restaurants Across Indian Cities (Top 10)", 
+       x = "City", 
+       y = "Number of Restaurants") 
+```
+
+This bar chart illustrates the distribution of restaurants across the top 10 Indian cities in the dataset. New Delhi dominates overwhelmingly with 5239 restaurants, accounting for the vast majority of the dataset. Gurgaon and Noida, which are satellite cities of Delhi, rank second and third with 1070 and 986 restaurants respectively. A significant gap exists between the top three cities and the rest: Faridabad has only 229 restaurants, while cities ranked 5th through 10th (Ghaziabad, Ahmedabad, Indore, Coimbatore, Chennai, and Bangalore) each contain merely 20-25 restaurants, which are almost negligible. This highly skewed distribution clearly demonstrates that the dataset is heavily concentrated in the National Capital Region, particularly New Delhi and its surrounding satellite cities. This data characteristic provides strong justification for our subsequent focused geographical analysis on the NCR area.
+
+Next we seek to investigate the distribution of restaurant ratings across different price ranges. We achieve this with a side-by-side box plot, shown below:
+```{r, echo = FALSE, warning = FALSE, fig.align='center'}
+ggplot(restaurant_India, aes(x = factor(price_range), 
+                              y = aggregate_rating,
+                              fill = factor(price_range))) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, 
+               fill = "red", color = "darkred") +
+  labs(title = "Distribution of Restaurant Ratings Across Price Ranges",
+       subtitle = "Red diamonds indicate mean ratings",
+       x = "Price Range (1 = Lowest, 4 = Highest)",
+       y = "Aggregate Rating",
+       fill = "Price Range")
+```
+
+The boxplot reveals a clear positive relstionship between price range and restaurant ratings. As the price range increases from 1 to 4, both the median ratings (black lines inside the boxes) and mean ratings (red diamonds) show a steady upward trend. Specifically, restaurants in price range 1 have an average rating of approximately 2.0 with a median about 2.9, while those in price range 3 and 4 achieve both average and median ratings above 3.6. Notably, price range 1 reveals the widest distribution of ratings, which spans from 0 to around 3.5, and contains many low ratings. In contrast, price ranges 3 and 4 display more concentrated and consistently high ratings, with medians around 3.7-3.8, indicating that higher-priced restaurants generally offer more stable, high-quality dining experiences. However, the presence of outliers with ratings of 0 across all price ranges, likely representing "Not Rated" establishments or extreme negative reviews, reminds us that quality can vary even within premium price segments. Overall, this visualization strongly supports our research direction that restaurant price range serves as a significant predictor of rating quality. 
+
+Finally, we seek to investigate the distribution of rating on different cuisine types. We demonstrate this using the below lollipop plot.
+```{r, echo = FALSE, warning = FALSE, fig.align='center'}
+library(stringr)
+# 1. 识别并过滤出前 10 大菜系 (与您原代码一致)
+df3 <- restaurant_India %>%
+  mutate(main_cuisine = str_trim(str_split_fixed(cuisines, ",", 2)[,1])) %>%
+  filter(!is.na(main_cuisine)) %>%
+  count(main_cuisine, sort = TRUE)
+top10 <- df3$main_cuisine[1:10]
+df_top10 <- restaurant_India %>%
+  mutate(main_cuisine = str_trim(str_split_fixed(cuisines, ",", 2)[,1])) %>%
+  filter(main_cuisine %in% top10) 
+
+# 2. 摘要数据：计算平均值、最小值和最大值 (关键修改点)
+df_summary_lollipop <- df_top10 %>%
+  filter(aggregate_rating > 0) %>%
+  group_by(main_cuisine) %>%
+  summarise(n = n(),
+            mean_rating = mean(aggregate_rating, na.rm = TRUE),
+            min_rating = min(aggregate_rating, na.rm = TRUE), 
+            max_rating = max(aggregate_rating, na.rm = TRUE)) %>%  
+  arrange(mean_rating) 
+
+ggplot(df_summary_lollipop, 
+       aes(x = reorder(main_cuisine, mean_rating))) +
+  geom_segment(aes(y = min_rating, 
+                   yend = max_rating, 
+                   xend = main_cuisine),
+               color = "grey", 
+               linewidth = 0.8) + 
+  geom_point(aes(y = min_rating),
+             color = "darkred", 
+             size = 2, 
+             alpha = 0.6) + 
+  geom_point(aes(y = max_rating),
+             color = "darkgreen", 
+             size = 2, 
+             alpha = 0.6) +
+  geom_point(aes(y = mean_rating),
+             color = "steelblue", 
+             size = 4) + 
+  geom_text(aes(y = mean_rating, 
+                label = round(mean_rating, 2)), 
+            hjust = -0.4, 
+            size = 3.5, 
+            color = "black") +
+  geom_text(aes(y = min_rating, 
+                label = round(min_rating, 1)), 
+            hjust = -0.5, 
+            size = 3, 
+            color = "darkred") + 
+  geom_text(aes(y = max_rating, 
+                label = round(max_rating, 1)), 
+            hjust = 1.3, 
+            size = 3, 
+            color = "darkgreen") +
+  coord_flip() +
+  labs(x = "Cuisine (top 10)",
+       y = "Aggregate Rating",
+       title = "Average Aggregated Rating by Cuisine (Top 10)") 
+```
+
+This lollipop plot displays the average rating distribution for the top 10 most common cuisine types in the Indian restaurant dataset, revealing rating characteristics through three key metrics: minimum, mean, and maximum values. Continental cuisine achieves the highest average rating of 3.76, with ratings ranging from 2.1 to 4.8, which demonstrates both high overall quality and notable variation. Cafe follows closely with an average of 3.57 and a range of 2.3-4.9. Traditional Indian cuisines such as Mughlai, North Indian, and South Indian cluster in the middle range with averages between 3.11-3.35. This reflects that western and upscale cuisines tend to attract customers more inclined to provide ratings, while traditional budget-friendly options, despite their popularity, may receive fewer formal evaluations. Notably, while average ratings vary across cuisines (approximately 0.5 points), all cuisine types can achieve high maximum ratings of 4.2-4.9, indicating that excellent restaurants exist within each category. On the lower end, minimum ratings across all cuisines fall between 1.8-2.3, reflecting that even popular cuisine categories may contain inconsistent quality. This visualization reveals that cuisine type has some influence on restaurant ratings, but within-cuisine quality variation may be even more substantial.
+
+
+# Formal Research Question Statements 
+
+Given our previous understanding and exploration of our dataset, we now formally state our three research questions:
+
+1. How does restaurants' location, price range and convenience relate to its rating level? 
+
+2. What is the geographic distribution of restaurants and food price in the India National Capital Region (NCR), and how does it reflect the urban development and economic condition of this urban circle?
+
+3. What are the most popular cuisine types in India, and what does this infer about India’s national taste preferences? 
+
+The detailed investigation into these topics are listed below. 
+
+# Research Question 1: The relationship between restaurant price range, convenience, votes and rating
+
+## Preparation for Q1: Building convenience index 
+
+To understand what associates with the ratings of the restaurants in India, we hypothesized that price range and geographic association is the most common association. These are quantitative variables stored in the data, and we want to measure them using PCA as it is easier to observe associations.
+
+Aside from price range and geographic association, we also noticed a group of variables that could influence the rating. These variables are whether the restaurants allow table booking, online delivery, currently available of delivery, and have online menu. However, these are represented by binary variables in our dataset, which cannot be directly incorporated into the PCA model. In order to corporate these variables, we construct the "convenience_index", which is a quantitative variable that ranges from 0 to 4. The convenience_index is composed of the answers from four binary categorical variables that is related to dining experience: has_table_booking, has_online_delivery, is_delivering_now, and switch_to_order_menu. The value for convenience_index indicates the number of positive values for these four variables. 
+```{r, include = FALSE}
+restaurant_India$combine <- paste(restaurant_India$has_table_booking,
+                                  restaurant_India$has_online_delivery,
+                                  restaurant_India$is_delivering_now,
+                                  restaurant_India$switch_to_order_menu,
+                                  sep = "")
+restaurant_India$combine<-tolower(restaurant_India$combine)
+
+restaurant_India <- restaurant_India %>%
+  mutate(convenience_index = case_when(
+    combine == "nononono" ~ 0,
+    combine == "yesnonono" | combine == "noyesnono" | combine == "nonoyesno" | combine == "nononoyes" ~ 1,
+    combine == "yesyesnono" | combine == "yesnoyesno" | combine =="yesnonoyes" | combine =="noyesyesno" | combine =="noyesnoyes" | combine =="nonoyesyes" ~ 2,
+    combine == "noyesyesyes"|combine =="yesnoyesyes"|combine =="yesyesnoyes"|combine =="yesyesyesno" ~ 3,
+    combine == "yesyesyesyes" ~ 4
+  ))
+```
+
+## Building PCA and Biplot
+
+With previous prepartion completed, we can compute the principal components with R. A visualized scree plot is used here to determine which principal components that are the most important.
+```{r, echo = FALSE, warning = FALSE, fig.align='center'}
+
+#create a subset of restaurant data that only include quantitative data
+restaurant_quant <- subset(restaurant_India, 
+                           select = c(longitude, latitude,
+                                      price_range, votes, convenience_index))
+
+rest_pca <- prcomp(restaurant_quant, center = TRUE, scale. = TRUE)
+summary(rest_pca)
+```
+```{r, echo = FALSE, warning = FALSE}
+fviz_eig(rest_pca, addlabels = TRUE, 
+         ncp = ncol(restaurant_quant), ylim = c(0, 60))
+```
+
+While the outcome of the scree plot seems to show no clear elbow cut, we chooses the first two principal components as it covers 57 percent of the quantitative variables. Using the first two components, we create the biplot to further visualize the quantitative vectors and the association with price range.
+```{r, echo = FALSE, warning = FALSE, message = FALSE, fig.align='center'}
+fviz_pca_biplot(rest_pca, 
+repel = TRUE,
+habillage = restaurant_India$rating_text, pointshape = 19, label = "var",
+geom.ind = "point", legend.title = "Rating")
+```
+
+In the bi-plot, we observe that the rating text seems to be associated with price_range, votes, convenience index, and longitude. We suspect that the geographic location of the restaurants are located in India, specifically many of the restaurants data are from the National Capital Region of India. So the shift in latitude is less significant than the horizontal difference in each restaurants. we also noticed ratings beside "Not_rated, Poor" are more associated with votes as some of the points for high ratings like "excellent", "very good" extend in the same direction of the vector representing votes.
+
+You may have noticed the layers in the up-left of the plot. These layers are due to the convenience index and price range, both are ordinal variable. The rating text seems to be mixed together between each layer, so it's not particular clear which specific rating level is more associated with these two variables. In short, there exist some association in general.
+
+For those restaurant that are poor (blue dots), there seems to be weak association with all variables listed above. We think this is normal and reasonable as restaurants that has no advantage in pricing, convenience and location receive lower ratings. 
+
+## Further Statistical Analysis on Rating
+
+We have illustrated, through the above PCA, that convenience, price range, and votes are associated with rating level of restaurants. We are thus curious if these three variables can predict the rating of a restaurant in India. Hence, we conduct a linear regression analysis with rating as the dependent y-variable and set our predictors with price, votes received by the restaurants, and convenience index. Note that we used "aggregated_rating" here in our regression analysis, as aggregated_rating are the numeric representation of a restaurant's rating level, and it is quantitative, thus fit for linear regression tests.
+
+```{r, echo = FALSE, warning = FALSE}
+model<-lm(restaurant_India$aggregate_rating~factor(restaurant_India$price_range)+restaurant_India$votes+factor(restaurant_India$convenience_index))
+summary(model)
+```
+
+The summary of the regression model seems to show that all three are significant predictors, meaning rating does correlates with prices, number of votes, and the convenience of the restaurant. From the summary table, restaurants with price range of 3 and convenience index 2 has a greater estimated coefficient. This suggests the rating for medium cost restaurants that has 2 of the more convenient functions are most likely to get higher rating, with the number of votes fixed to certain constant. 
+
+ 
+# Research Question 2: The geographic distribution of restaurants and food price in the NCR
+
+## Preparation for Q2: Zooming in to the NCR
+
+To conduct a meaningful and focused geographical analysis, we decide to refine the dataset's scope from an all-India basis to specifically concentrate on the National Capital Region (NCR). The NCR is a special geographic region of India that includes the city of New Delhi and its four satellite cities, which are Noida, Ghaziabad, Faridabad, and Gurgaon. This decision is primarily driven by three critical factors.
+
+First, from a data sufficiency perspective, the majority of restaurant in the current dataset are concentrated within the NCR. Analyzing the full national scope would suffer from sparse data points outside this major urban circle, potentially leading to under-powered or not-detailed conclusions. Second, a national-level geographic plot would be overly macro-level and visually diffuse, making it impossible to identify the localized clustering, density patterns, and micro-trends essential for meaningful statistical interpretation. Finally, the NCR, anchored by New Delhi, serves as India's most prosperous economic powerhouse and most developed urban circle. Analyzing this typical and highly dynamic case study provides a robust and relevant foundation for future research, offering actionable insights that can potentially be generalized or contrasted with restaurant distribution patterns in other Indian cities or regions. 
+
+For these three reasons above, we decided to zoom into the NCR region. Thanks to the more narrow scope, we are able to use more accurate geographic libraries that is precise to the urban district level. We can thus achieve a higher-resolution view of urban restaurant distribution, and focus on the micro economic and demographic implications of the distribution. 
+```{r, include = FALSE}
+restaurant_ncr <- restaurant_India %>% 
+  filter(city %in% c("New Delhi", "Noida", "Ghaziabad", "Faridabad", "Gurgaon"))
+
+
+library(viridis)
+all_district_data <- map_india(regions = "districts") 
+ncr_districts <- c(
+  "Central", "East", "New Delhi", "North", "North East", "North West",
+  "Shahdara", "South", "South East", "South West", "West", 
+  "Gurugram", "Faridabad", "Gautam Buddha Nagar", "Ghaziabad"
+)
+ncr_boundary <- all_district_data %>%
+  filter(dtname %in% ncr_districts) %>%
+  st_as_sf(sf_column_name = "geom")
+
+restaurant_ncr_sf <- mapindia_transform(
+  data = restaurant_ncr, 
+  input_names = c("longitude", "latitude") 
+)
+
+restaurant_density_data <- restaurant_ncr_sf %>%
+  st_coordinates() %>%
+  as_tibble() %>% 
+  rename(longitude = X, latitude = Y)
+
+restaurants_with_district <- st_join(
+  restaurant_ncr_sf, 
+  ncr_boundary %>% select(dtname), 
+  join = st_within
+)
+
+district_restaurant_count <- restaurants_with_district %>%
+  filter(!is.na(dtname)) %>% 
+  group_by(dtname) %>%
+  summarise(restaurant_count = n()) %>%
+  st_drop_geometry()
+
+ncr_fill <- ncr_boundary %>%
+  left_join(district_restaurant_count, by = "dtname") %>%
+  mutate(restaurant_count = replace_na(restaurant_count, 0))
+
+color_bins <- c(
+  "0 - 250" = "#DEEBF7",     # 浅蓝
+  "251 - 500" = "#9ECAE1",   # 中浅蓝
+  "501 - 750" = "#4292C6",   # 中深蓝
+  "751+" = "#08519C"         # 深蓝 (最高)
+)
+
+satellite_cities <- c("Gurugram", "Faridabad", "Gautam Buddha Nagar", "Ghaziabad")
+
+ncr_fill <- ncr_fill %>%
+  mutate(boundary_group = if_else(dtname %in% satellite_cities, 
+                             "Satellite City", 
+                             "Delhi Core"),
+    restaurant_level = case_when(
+      restaurant_count <= 250 ~ "0 - 250",
+      restaurant_count <= 500 ~ "251 - 500",
+      restaurant_count <= 750 ~ "501 - 750",
+      TRUE ~ "751+" 
+    ) %>% factor(levels = names(color_bins)), 
+    label_name = if_else(dtname == "Gautam Buddha Nagar", "Noida", dtname))
+
+label_data <- ncr_fill %>% 
+  filter(dtname %in% satellite_cities) %>%
+  st_centroid()
+```
+
+## Geographic distribution using heat map
+
+Now we will present the geographic distribution of restaurants in NCR, see the heat map below: 
+```{r, echo = FALSE, warning = FALSE, fig.align='center'}
+ggplot() +
+  geom_sf(data = ncr_fill, 
+          aes(fill = restaurant_level),    
+          color = NA, 
+          linewidth = 0.1,           
+          alpha = 0.8) +
+  geom_sf(data = ncr_fill,
+          aes(color = boundary_group),
+          fill = NA, 
+          linewidth = 1.0) + 
+  geom_sf_text(data = label_data,
+               aes(label = label_name),
+               color = "gray10",
+               size = 3,
+               fontface = "bold",
+               nudge_x = 0.01, nudge_y = -0.01) + 
+  scale_fill_manual(name = "Restaurant Count Level", values = color_bins) + 
+  scale_color_manual(name = "Region Group", 
+                     values = c("Delhi Core" = "maroon", 
+                                "Satellite City" = "orange")) +
+  labs(title = "NCR Restaurant Distribution by District",
+       x = "Longitude", y = "Latitude") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+The heat map includes all districts in the NCR, with New Delhi city core districts having red borders and satellite cities having orange borders. Restaurant counts are separated into four levels, each represented by different shades of blue. The names of new Delhi core districts are not shown here due to spatial limitations. From the graph, we see that the satellite city of Gurugram and Noida, as well as New Delhi, South East Delhi, and West Delhi district have the most number of restaurants, while Ghaziabad, Faridabad, South West Delhi, and North East Delhi have the least amount of restaurants. 
+
+Of course, count distribution of restaurants might not be able to reveal the whole picture about NCR's economic and demographic status, we therefore create a second heat map to discuss the average dining cost of each NCR district. We derive the district dining cost from the variable average_cost_for_two, and use this as filling. The heat map is presented below: 
+```{r, echo = FALSE, warning = FALSE, fig.align='center'}
+district_average_cost <- restaurants_with_district %>%
+  filter(!is.na(dtname)) %>% 
+  group_by(dtname) %>%
+  summarise(
+    avg_cost = mean(average_cost_for_two, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  st_drop_geometry()
+
+ncr_cost_fill <- ncr_fill %>% 
+  select(dtname, stname, boundary_group, label_name, geom) %>% 
+  left_join(district_average_cost, by = "dtname")
+
+cost_color_bins <- c(
+  "200 - 400" = "#FEE0D2",     # 浅橙红 (最低)
+  "401 - 600" = "#FC9272",     # 中浅橙红
+  "601 - 800" = "#DE2D26",     # 中深橙红
+  "801+" = "#A50F15"          # 深红 (最高)
+)
+
+ncr_cost_fill <- ncr_cost_fill %>%
+  mutate(cost_level = case_when(
+      is.na(avg_cost) ~ NA_character_, 
+      avg_cost <= 400 ~ "200 - 400",
+      avg_cost <= 600 ~ "401 - 600",
+      avg_cost <= 800 ~ "601 - 800",
+      TRUE ~ "801+") %>% 
+        factor(levels = names(cost_color_bins)))
+
+satellite_cities <- c("Gurugram", "Faridabad", "Gautam Buddha Nagar", "Ghaziabad")
+label_data_satellite <- ncr_cost_fill %>% 
+  filter(dtname %in% satellite_cities) %>%
+  st_centroid()
+
+ggplot() +
+  geom_sf(data = ncr_cost_fill, 
+          aes(fill = cost_level), 
+          color = NA, 
+          alpha = 0.8) +
+  geom_sf(data = ncr_cost_fill,
+          aes(color = boundary_group), 
+          fill = NA, 
+          linewidth = 1) + 
+  geom_sf_text(data = label_data_satellite, 
+               aes(label = label_name),
+               color = "gray10",
+               size = 4,
+               fontface = "bold") + 
+  scale_fill_manual(name = "Average Dining Cost", 
+                    values = cost_color_bins, 
+                    na.value = "grey80", 
+                    drop = FALSE) +
+  scale_color_manual(name = "Region Group", 
+                     values = c("Delhi Core" = "#4292C6", 
+                                "Satellite City" = "orange")) +
+  labs(title = "NCR Restaurant Average Cost by District",,
+       x = "Longitude", y = "Latitude") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+From the graph above, we see that New Delhi district has the highest dining cost, while Gurugram, South Delhi, and South East Delhi has relatively high dining cost. North East Delhi, East Delhi, and South West Delhi has the lowest dining cost. 
+
+A comparative analysis of the two heat maps yields several noteworthy insights. Both South West Delhi and North East Delhi district exhibit the lowest number of restaurants as well as the lowest average dining costs, whereas the New Delhi district stands out with the highest restaurant density and the highest dining expenditure. The number of restaurants and average dining costs serve as indicators of a district’s resident consumption frequency and overall economic vitality. In more economically developed districts, people tend to dine out more frequently and are also more willing to spend on food, resulting in a higher restaurant concentration and greater average dining costs. Therefore, the stark contrast discussed above clearly highlights New Delhi district as the economic center of the National Capital Region (NCR), while South West Delhi and North East Delhi district appear to be relatively underdeveloped. 
+
+Furthermore, attention should be given to the four satellite cities surrounding New Delhi. While these cities (Noida, Gurugram, Faridabad, and Ghaziabad) show relatively high dining costs (generally between 400–600 rupees, with Gurugram exceeding 600 rupees), the distribution of restaurants varies significantly. Noida and Gurugram have a noticeably higher number of restaurants, whereas Faridabad and Ghaziabad each have fewer than 250. The moderately high dining costs across these cities suggest a predominantly middle-class demographic. However, the differences in restaurant numbers reflect variations in population density and urban scale. From this perspective, Noida and Gurugram emerge as densely populated, middle-class residential centers, while Ghaziabad and Faridabad appear to have smaller populations and underdeveloped urban infrastructure. 
+
+To summarize, by analyzing the distribution of restaurants and the average dining costs across districts, we conclude that the economic and residential core of the National Capital Region (NCR) is centered around New Delhi district, extending eastward to Noida and southwestward to Gurugram. The economic prosperity of these key district and satellite cities also positively impacts the neighboring regions that lie between them. In contrast, the northern and western parts of the NCR remain relatively underdeveloped. Our conclusion aligns well with existing facts. According to information from Wikipedia, New Delhi district is recognized as the political and economic center of the NCR, while both Gurugram and Noida are already highly developed satellite cities. These cities host a significant number of foreign enterprises and are home to well-established technology and manufacturing industries, reinforcing their roles as economic engines of the region.
+
+# Research Question 3: The most popular cuisine types in India
+
+## Preparation for Q3: Preparing wordcloud
+
+We rely on the variable "cuisines" to analyze popular cuisine types in India. Since cuisine values are descriptive texts (phrases and short sentences) describing the flavors and options of the restaurant food, we see the opportunity to use textual analysis to discuss popularity. We will create a wordcloud with the most frequent keywords in the cuisine descriptions, and use that to discuss India's national taste and cuisine trends. 
+```{r, include = FALSE}
+title <- Corpus(VectorSource(restaurant_India$cuisines))
+#change to lowercase
+title <- tm_map(title, content_transformer(tolower))
+# Remove punctuations
+title <- tm_map(title, removePunctuation)
+# Eliminate extra white spaces
+title <- tm_map(title, stripWhitespace)
+dtm.title <- DocumentTermMatrix(title, control = list(stopwords = TRUE, stemming = TRUE))
+dtm.title
+```
+
+## Cuisine trend using Wordcloud
+
+The word cloud is demonstrated below:
+```{r, echo = FALSE, warning = FALSE, fig.align='center'}
+rest_sum <- restaurant_India %>%
+  unnest_tokens(word, cuisines)
+data(stop_words)
+rest_sum <- rest_sum %>%
+  filter(!(word %in% stop_words$word))
+
+rest_sum <- rest_sum %>%
+  group_by(word) %>%
+  # Instead of summarize we can use the count function
+  count() %>%
+  ungroup() 
+
+wordcloud(words = rest_sum$word, freq = rest_sum$n,
+          random.order = FALSE, max.words = 100,
+          colors = brewer.pal(8, "Dark2"), rot.per = FALSE)
+```
+
+From the word cloud above, we see that the most frequent cuisine keywords are "indian", "food", "north", "fast", and "chinese", while "continental", "mughlai", "bakery", "south", "cafe", "Italian", and "dessert" are keywords with secondary frequency level.
+
+Beyond the most obvious conclusion, such as the fact that Indian cuisine is the most popular among Indian consumers, we can derive several interesting insights from the data. Among the various regional Indian cuisines, North Indian food is the most popular, followed by South Indian and Mughlai cuisines. When it comes to international food, Chinese and Italian cuisines are the top choices among Indian consumers. Additionally, there is a notable preference for fast food and bakery items (denoted by cafe and desserts). 
+
+Among these conclusions, India’s strong preference for Chinese cuisine is particularly intriguing. Despite being geographically close, China’s culinary traditions differ greatly from India’s. Yet, Indian consumers show a stronger affinity for Chinese food over other Asian options such as Indonesian or Thai cuisine, which are more heavily influenced by Indian flavors. This preference reflects not only the frequent cultural exchanges between India and China but also China’s growing cultural and economic influence in the region.
+
+The popularity of fast food, cafes, and desserts further reflects the impact of Western culture and the rise of a modern urban middle class in India. Fast food, with its convenience and fast-paced service, caters to the busy routines of urban dwellers, while cafés and dessert shops are increasingly popular spots for leisure consumption. Together, these preferences signal India’s ongoing urbanization, increased consumer purchasing power, and a shift in dining habits shaped by both global influences and evolving domestic lifestyles.
+
+# Conclusion and Reflection
+
+## Formal Conclusion
+
+The results of PCA and linear regression test shows a clear link between price range, vote numbers, convenience, and rating level. As price range, votes, and convenience increase, the restaurant is expected to receive higher ratings. This result shows that voting number, convenience, and price ranges are all important factors to consider when restaurants are trying to increase their reputation among consumers, and aligns with the real life lessons of restaurant business. 
+
+The heat map of the NCR reveals strong geographic distribution patterns. New Delhi, Noida, and Gurugram form a clear economic center with both high restaurant density and high dining costs. Outer districts, especially those in the North and West, show lower restaurant counts and lower costs. This pattern matches what is commonly observed in real urban life, where business centers attract both higher spending and more commercial activity. 
+
+The cuisine analysis shows that Indian food dominates the dining market with North Indian cuisine being the most popular regional cuisine. Chinese cuisine stands out as the most common foreign option, and fast food, cafes, and bakeries also appear frequently. These results reflect India's rapidly changing daily urban dining habits and point to a mix of traditional food culture and modern lifestyle trends shaped by city growth and improving economic conditions.
+
+## Potential Limitation
+
+Although we are able to make progress and draw relativley reliable conclusions on the above intersting topics, there are a lot more questions regarding restaurants that this study didn't touch on. For instance, is there an association between country and cuisine preference? How does price range and other restaurant factors relate to consumer expectation, and is there an optimal pricing strategy for restaurant given enough information on customer needs? Does the diversification of cuisine types influence restaurant ratings? These are all interesting questions that this research didn't cover, and we think this is due to the following limitations in our research:
+
+The first and most significant limitation of our study is the geographic bias of our dataset. Since we found the dataset on Kaggle, we do not know how the dataset was originally collected, nor whether any biases were introduced during the data-gathering process. In hindsight, although this dataset is labeled as a global restaurant dataset, its distribution is highly skewed: the vast majority of restaurants are located in India, and within India, most are concentrated in New Delhi and its satellite cities. This level of concentration prevents us from drawing broad, globally representative conclusions. As a result, we had to narrow our scope through data cleaning and focus on a specific country or region. For a topic like restaurants, which is deeply rooted in regional and cultural contexts, this limitation is especially not favorable.
+
+Second, the overall quality of the data and variables within the dataset is not as high as we expected. During the Exploratory Data Analysis phase, we identified several variables that either lacked meaningful content or were insufficiently defined. Even among variables that were clearly defined, some lacked strong explanatory power. For example, factors such as food quality, service experience, brand reputation, and personal expectations significantly influence restaurant ratings. However, these nuanced dimensions were not captured in the dataset, which instead only provided an aggregated rating variable. The lack of detailed and explanatory variables influenced the explaining powers of our PCA and linear regression analysis. Our model has an adjusted R-square of 0.24, meaning only 24% of the variation in rating is captured by the model. There are certainly rooms for improvements.
+
+Third, it is hard to find libraries in R with geographic information that suites the scale and complexity of our research. In analyzing the geographic distribution of restaurants, we were able to segment the data down to the city district level, which is pleasant enough. Ideally, however, a more refined analysis would include street-level or even neighborhood-level data, so that we can dive deeper into the distribution of restaurants and identify commercial hubs within each city district. Achieving this would require access to a more detailed and accurate geographic information library of India. Throughout our project, sourcing a suitable geographic database remained a persistent challenge. 
+
+Lastly, the cuisine analysis could be improved. The cuisine analysis currently was based on short descriptive text labels provided by the restaurants themselves. These labels are often inconsistent, and many restaurants list multiple cuisine types, which dilutes the accuracy of our findings. As a result, the word cloud visualization reflects general popularity rather than precise market share or customer preferences. Moreover, the dataset represents only a single snapshot in time and cannot capture evolving restaurant trends or shifts in consumer behavior as cities develop and demographics change.
+
+## Recommendations for Possible Future Approaches
+
+For any future studies on restaurants, we offer the following recommendations:
+
+First and foremost, ensure that the data is collected in a geographically balanced manner. If the goal is to compile nationwide restaurant data, it is important to include a wide and representative sample from each city and province, avoiding extreme discrepancies in data volume across regions. Today, many developed countries have well-established food review platforms such as Yelp. Collecting data from platforms with broad coverage may help mitigate this issue and improve geographic representativeness.
+
+Second, pay close attention to the quality and relevance of variables. Avoid unnecessary repetition of information and ensure that each variable is meaningfully related to the core research questions. For example, consider incorporating more variables that capture psychological aspects of consumer perception, as well as those variables that assess a restaurant’s success from the perspective of traffic, revenue, and profitability. 
+
+Last but not least, if your research involves geographic distribution analysis, it is essential and especially helpful to have access to a sufficiently granular and accurate geographic information set. The precision of your geographic library should at least match the smallest geographic unit in your dataset. For instance, if your restaurant data is organized by city, your geographic dataset must be accurate to at least the city level. More detailed mapping is always beneficial, though it may require substantial effort to build or source such a library independently.
